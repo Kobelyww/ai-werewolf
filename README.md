@@ -9,13 +9,15 @@
 - **完整对局引擎**：黑夜/白天流转、狼人共识机制、警长竞选、投票放逐、猎人开枪、白痴翻牌
 - **信息隔离**：每个 Agent 只接收其角色有权知晓的信息子集
 - **结构化日志**：JSON 完整记录 + Markdown 复盘报告
-- **三个进阶方向**：
+- **三个进阶方向**（对标 Hermes Agent 自进化架构）：
 
-| 方向 | 说明 |
-|------|------|
-| ② 评测+复盘+Leaderboard | 多维可量化评测体系，对局复盘归因，跨模型跨版本排行榜 |
-| ③ 自进化 Agent | 对局→分析弱点→优化 Prompt→再对局的迭代提升循环 |
-| ① 自演化 Agent | Agent 读取自身代码→分析→提出修改→沙箱验证→应用 |
+| 方向 | 说明 | 状态 |
+|------|------|------|
+| ② 评测+复盘+Leaderboard | 多维可量化评测体系，对局复盘归因，跨模型跨版本排行榜 | Phase 1 |
+| ③ 自进化 Agent | Hermes 风格 7 步文本优化管线：SELECT→BUILD→BASELINE→CONSTRAIN→OPTIMIZE→VALIDATE→DEPLOY | Phase 1 |
+| ① 自演化 Agent | Agent 读取自身代码→分析→提出修改→沙箱验证→应用 | Phase 4（计划中） |
+
+**进化核心公式**：`agent 表现 = 模型能力 × 上下文文本质量` —— 不改模型权重，只优化 System Prompt 等文本。
 
 ## 项目结构
 
@@ -46,8 +48,14 @@ werewolf/
 │   ├── replay.py            # 对局复盘（时间线重建、转折点识别）
 │   └── leaderboard.py       # 排行榜（跨模型/版本对比）
 │
-├── evolution/               # 进阶 ③：自进化
-│   ├── optimizer.py         # LLM 分析弱点 → 生成改进的 System Prompt
+├── evolve.py                # 进化入口（Hermes 7 步管线一键运行）
+│
+├── evolution/               # 进阶 ③：Hermes 风格自进化
+│   ├── evaluator.py         # FitnessEvaluator（7 维 LLM-as-judge 评分）
+│   │                        # + ConstraintValidator（尺寸/膨胀/结构门控）
+│   ├── gepa_optimizer.py    # GEPA 优化器（反馈→变异→评估→择优循环）
+│   ├── reviewer.py          # BackgroundReviewer（每局审视+跨局策略提取）
+│   ├── optimizer.py         # StrategyOptimizer（LLM 分析弱点 → 优化 Prompt）
 │   ├── tournament.py        # 跨代锦标赛（新旧版本同台竞技）
 │   └── tracker.py           # 进化历史追踪（胜率趋势可视化）
 │
@@ -111,26 +119,53 @@ lb.record_game("DeepSeek-V4", "v1.1", result.winner.value, result.total_rounds)
 print(lb.report())
 ```
 
-### 运行自进化
+### 运行自进化（Hermes 7 步管线）
 
+```bash
+# 一键进化：默认 3 代，每代 20 局
+python -m werewolf.evolve
+
+# 5 代，每代 50 局
+python -m werewolf.evolve --generations 5 --games 50
+
+# 只优化狼人
+python -m werewolf.evolve --role 狼人
+
+# 只做后台审视（不优化，纯收集经验）
+python -m werewolf.evolve --review-only
+```
+
+**管线流程**（对标 `NousResearch/hermes-agent` s25-s27）：
+
+```
+① SELECT → ② BUILD → ③ BASELINE → ④ CONSTRAIN → ⑤ OPTIMIZE → ⑥ VALIDATE → ⑦ DEPLOY
+  选目标     对局+审视   多维适应度    约束门控     GEPA循环      约束复查      备份写入
+```
+
+**GEPA 优化循环**（Genetic-Pareto Prompt Evolution）：
 ```python
-from werewolf.evolution import StrategyOptimizer, EvolutionTournament, EvolutionTracker
+from werewolf.evolution import (
+    FitnessEvaluator, ConstraintValidator, GEPAOptimizer, BackgroundReviewer
+)
 
-# 分析弱点
-optimizer = StrategyOptimizer(llm)
-weaknesses = optimizer.analyze_weaknesses("狼人", game_logs)
+# 7 维适应度评估
+evaluator = FitnessEvaluator(llm)
+score = evaluator.evaluate("狼人", game_logs, win_rate=0.45)
+print(f"伪装: {score.dimensions[FitnessDimension.DECEPTION]:.1f}")
+print(f"逻辑: {score.dimensions[FitnessDimension.LOGIC]:.1f}")
 
-# 优化 Prompt
-new_prompt = optimizer.optimize("狼人", current_prompt, metrics, weaknesses)
+# 约束门控
+validator = ConstraintValidator(max_size_increase=0.3)
+check = validator.validate(original_prompt, new_prompt)
 
-# 跨代锦标赛验证
-tournament = EvolutionTournament(llm, games_per_generation=20)
-results = tournament.run_generation({"狼人": new_prompt}, generation_id=1)
+# 后台审视（每局自动提取经验）
+reviewer = BackgroundReviewer(llm)
+review = reviewer.review(game_log)
+strategies = reviewer.extract_strategies()  # 跨局通用策略
 
-# 追踪进化
-tracker = EvolutionTracker()
-tracker.record_generation(metrics)
-print(tracker.improvement_summary())
+# GEPA 优化
+gepa = GEPAOptimizer(llm, evaluator, validator, max_generations=3)
+result = gepa.optimize("狼人", current_prompt, game_logs, win_rate=0.45)
 ```
 
 ### 运行自演化
